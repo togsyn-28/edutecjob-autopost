@@ -1,0 +1,1 @@
+{"day": 1, "kind": "quiz", "name": "Quiz", "category": "Reasoning", "title": "Find the next number: 2, 6, 12, 20, 30, ?", "rules": "", "data": {"options": ["A) 40", "B) 44", "C) 42", "D) 48"], "correct": 2}, "answer_text": "(C) 42. Differences are 4, 6, 8, 10, 12. So 30 + 12 = 42.", "image": "published/day-001-1.png"}
