@@ -1,5 +1,6 @@
 """
-Publishes one image + caption to Instagram using the official Instagram API.
+Publishes a post to Instagram using the official Instagram API.
+One --image-url makes a single-image post; two or more make a carousel (swipe) post.
 
 Needs these environment variables (set them as GitHub secrets, never in this file):
   IG_USER_ID       your Instagram professional account ID
@@ -10,7 +11,7 @@ Optional:
   GRAPH_VERSION    API version, default v23.0
 
 Usage:
-  python3 post_to_instagram.py --image-url https://.../day-001.png --caption-file caption.txt
+  python3 post_to_instagram.py --caption-file caption.txt --image-url URL1 [--image-url URL2 ...]
 """
 import argparse
 import json
@@ -36,9 +37,21 @@ def call(method, url, params):
         sys.exit("Instagram API error %s: %s" % (e.code, body))
 
 
+def wait_ready(base, cid, token):
+    for _ in range(36):
+        status = call("GET", "%s/%s" % (base, cid), {
+            "fields": "status_code", "access_token": token}).get("status_code")
+        if status == "FINISHED":
+            return
+        if status in ("ERROR", "EXPIRED"):
+            sys.exit("Instagram could not process media %s (status %s)." % (cid, status))
+        time.sleep(5)
+    sys.exit("Timed out waiting for Instagram to process media %s." % cid)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image-url", required=True)
+    ap.add_argument("--image-url", action="append", required=True)
     ap.add_argument("--caption-file", required=True)
     args = ap.parse_args()
 
@@ -49,29 +62,27 @@ def main():
     host = os.environ.get("GRAPH_HOST") or "graph.instagram.com"
     version = os.environ.get("GRAPH_VERSION") or "v23.0"
     base = "https://%s/%s" % (host, version)
+    media = "%s/%s/media" % (base, user_id)
 
     with open(args.caption_file, encoding="utf-8") as f:
         caption = f.read()
 
-    # 1. Upload: Instagram downloads the image from the public URL.
-    container = call("POST", "%s/%s/media" % (base, user_id), {
-        "image_url": args.image_url, "caption": caption, "access_token": token})
-    cid = container["id"]
-    print("Created media container", cid)
-
-    # 2. Wait until Instagram has processed it.
-    for _ in range(30):
-        status = call("GET", "%s/%s" % (base, cid), {
-            "fields": "status_code", "access_token": token}).get("status_code")
-        if status == "FINISHED":
-            break
-        if status in ("ERROR", "EXPIRED"):
-            sys.exit("Instagram could not process the image (status %s)." % status)
-        time.sleep(5)
+    if len(args.image_url) == 1:
+        cid = call("POST", media, {"image_url": args.image_url[0], "caption": caption,
+                                   "access_token": token})["id"]
     else:
-        sys.exit("Timed out waiting for Instagram to process the image.")
+        children = []
+        for url in args.image_url:
+            child = call("POST", media, {"image_url": url, "is_carousel_item": "true",
+                                         "access_token": token})["id"]
+            wait_ready(base, child, token)
+            children.append(child)
+            print("Uploaded slide", url)
+        cid = call("POST", media, {"media_type": "CAROUSEL", "children": ",".join(children),
+                                   "caption": caption, "access_token": token})["id"]
+    print("Created post container", cid)
+    wait_ready(base, cid, token)
 
-    # 3. Publish.
     result = call("POST", "%s/%s/media_publish" % (base, user_id), {
         "creation_id": cid, "access_token": token})
     print("Published! Instagram media id:", result.get("id"))

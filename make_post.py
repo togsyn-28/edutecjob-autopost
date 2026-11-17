@@ -1,26 +1,36 @@
 """
-Creates today's "Question of the Day" post for @edutecjob.
+Creates today's post for @edutecjob.
 
-  python3 make_post.py               -> makes today's image + caption (does not mark it posted)
-  python3 make_post.py --mark-posted -> call after a successful post, moves to the next question
-  python3 make_post.py --preview 5   -> makes the first 5 posts into previews/ to look at
+Every day is a different puzzle type (see ROTATION). Each post is a carousel:
+  slide 1 = today's puzzle
+  slide 2 = yesterday's solution (from day 2 onwards)
 
-Questions come from questions.csv. Progress is kept in state.json.
+  python3 make_post.py               -> makes today's images + caption (does not mark it posted)
+  python3 make_post.py --mark-posted -> call after a successful post, moves to the next day
+  python3 make_post.py --preview 10  -> makes the first 10 days into previews/ to look at
+
+Quiz questions come from questions.csv. Progress is kept in state.json.
 """
 import argparse
 import csv
 import json
 import os
-import textwrap
+import random
 
 from PIL import Image, ImageDraw, ImageFont
+
+import puzzles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS = os.path.join(HERE, "questions.csv")
 STATE = os.path.join(HERE, "state.json")
 OUT_DIR = os.path.join(HERE, "published")
 
+# Order of puzzle types, repeated forever. Change it freely.
+ROTATION = ["quiz", "sudoku", "race", "spot", "quiz", "path", "team", "gears", "quiz", "maze"]
+
 W, H = 1080, 1350
+PAD = 70
 NAVY = (18, 35, 90)
 NAVY_DARK = (10, 22, 60)
 ORANGE = (247, 147, 30)
@@ -31,74 +41,56 @@ GREEN = (34, 160, 90)
 
 FONT_PATHS = {
     True: [
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
     ],
     False: [
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
         "C:/Windows/Fonts/arial.ttf",
     ],
 }
+_font_cache = {}
 
 HASHTAGS_BASE = [
-    "#edutecjob", "#mocktest", "#competitiveexams", "#governmentjobs", "#sscexam",
-    "#bankexam", "#railwayexam", "#dailyquiz", "#studymotivation", "#aspirants",
+    "#edutecjob", "#competitiveexams", "#governmentjobs", "#sscexam", "#bankexam",
+    "#dailyquiz", "#dailypuzzle", "#studymotivation", "#aspirants", "#mocktest",
 ]
-HASHTAGS_BY_CATEGORY = {
+QUIZ_TAGS = {
     "Reasoning": ["#reasoning", "#reasoningtricks", "#logicalreasoning"],
     "Aptitude": ["#quantitativeaptitude", "#mathstricks", "#aptitude"],
     "English": ["#englishgrammar", "#vocabulary", "#spokenenglish"],
 }
-HASHTAGS_GK = ["#gk", "#generalknowledge", "#gkquiz"]
 
 
 def font(size, bold=False):
-    for path in FONT_PATHS[bold]:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+    key = (size, bold)
+    if key not in _font_cache:
+        f = None
+        for path in FONT_PATHS[bold]:
+            if os.path.exists(path):
+                f = ImageFont.truetype(path, size)
+                break
+        _font_cache[key] = f or ImageFont.load_default()
+    return _font_cache[key]
+
+
+puzzles.set_font(font)
 
 
 def fix(text, fnt):
     """Some fonts have no rupee sign; show 'Rs.' instead of an empty box."""
-    if "₹" in text and fnt.getmask("₹").getbbox() == fnt.getmask("￿").getbbox():
-        return text.replace("₹", "Rs.")
+    if "\u20b9" in text and fnt.getmask("\u20b9").getbbox() == fnt.getmask("\uffff").getbbox():
+        return text.replace("\u20b9", "Rs.")
     return text
 
 
-def load_questions():
-    with open(QUESTIONS, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    for i, r in enumerate(rows, start=2):
-        if r["answer"].strip().upper() not in "ABCD" or not r["question"].strip():
-            raise SystemExit("questions.csv line %d: answer must be A, B, C or D" % i)
-    return rows
-
-
-def load_state():
-    if os.path.exists(STATE):
-        with open(STATE, encoding="utf-8") as f:
-            return json.load(f)
-    return {"posted_count": 0, "last": None}
-
-
-def save_state(state):
-    with open(STATE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-
-
-def answer_text(q):
-    letter = q["answer"].strip().upper()
-    return letter, q[letter.lower()]
-
-
-def wrap_to_width(draw, text, fnt, max_w):
-    words, lines, line = text.split(), [], ""
-    for w in words:
+def wrap(d, text, fnt, max_w):
+    lines, line = [], ""
+    for w in text.split():
         test = (line + " " + w).strip()
-        if draw.textlength(test, font=fnt) <= max_w:
+        if d.textlength(test, font=fnt) <= max_w:
             line = test
         else:
             if line:
@@ -109,125 +101,170 @@ def wrap_to_width(draw, text, fnt, max_w):
     return lines
 
 
-def render(q, day, yesterday, path):
+# ---------------------------------------------------------------- quiz type
+def load_questions():
+    with open(QUESTIONS, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for i, r in enumerate(rows, start=2):
+        if r["answer"].strip().upper() not in ("A", "B", "C", "D") or not r["question"].strip():
+            raise SystemExit("questions.csv line %d: answer must be A, B, C or D" % i)
+    return rows
+
+
+def gen_quiz(q):
+    letter = q["answer"].strip().upper()
+
+    def draw(d, box, show_solution):
+        x0, y0, x1, y1 = box
+        n = 4
+        gap = 20
+        box_h = min(104, (y1 - y0 - 3 * gap - (110 if show_solution else 0)) / n)
+        y = y0 + 10
+        for L in "ABCD":
+            right = show_solution and L == letter
+            d.rounded_rectangle([x0, y, x1, y + box_h], radius=22, fill=GREEN if right else WHITE)
+            cx, cy = x0 + 56, y + box_h / 2
+            d.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=WHITE if right else NAVY)
+            d.text((cx, cy), L, font=font(36, True), fill=GREEN if right else WHITE, anchor="mm")
+            s = 38
+            f = font(s, True)
+            opt = fix(q[L.lower()], f)
+            while d.textlength(opt, font=f) > x1 - x0 - 140 and s > 24:
+                s -= 2
+                f = font(s, True)
+            d.text((x0 + 115, cy), opt, font=f, fill=WHITE if right else INK, anchor="lm")
+            y += box_h + gap
+        if show_solution:
+            f = font(30, False)
+            for line in wrap(d, fix(q["explanation"], f), f, x1 - x0)[:3]:
+                d.text((x0, y + 8), line, font=f, fill=WHITE)
+                y += 40
+
+    return {
+        "name": "Quiz", "category": q["category"], "title": q["question"], "rules": "",
+        "puzzle": lambda d, b: draw(d, b, False),
+        "answer": lambda d, b: draw(d, b, True),
+        "answer_text": "(%s) %s. %s" % (letter, q[letter.lower()], q["explanation"]),
+        "options": "A) %s\nB) %s\nC) %s\nD) %s" % (q["a"], q["b"], q["c"], q["d"]),
+        "hashtags": QUIZ_TAGS.get(q["category"], ["#gk", "#generalknowledge", "#gkquiz"]),
+    }
+
+
+# ---------------------------------------------------------------- which puzzle on which day
+def puzzle_for_day(day, questions):
+    pos = (day - 1) % len(ROTATION)
+    kind = ROTATION[pos]
+    if kind == "quiz":
+        per_cycle = ROTATION.count("quiz")
+        idx = ((day - 1) // len(ROTATION)) * per_cycle + ROTATION[:pos].count("quiz")
+        return gen_quiz(questions[idx % len(questions)])
+    return puzzles.GENERATORS[kind](random.Random(day * 7919 + 17))
+
+
+# ---------------------------------------------------------------- page layout
+def frame(tag, category, title, title_max_lines=3):
     img = Image.new("RGB", (W, H), NAVY)
     d = ImageDraw.Draw(img)
-
-    # soft background gradient
     for y in range(H):
         t = y / H
-        c = tuple(int(NAVY[i] * (1 - t) + NAVY_DARK[i] * t) for i in range(3))
-        d.line([(0, y), (W, y)], fill=c)
-
-    pad = 70
-    # header
-    d.text((pad, 60), "EduTecJob", font=font(54, True), fill=WHITE)
-    d.text((pad, 124), "Learn  •  Practice  •  Get Placed", font=font(26), fill=SOFT)
-    tag = "QUESTION OF THE DAY  #%d" % day
-    tf = font(26, True)
+        d.line([(0, y), (W, y)], fill=tuple(int(NAVY[i] * (1 - t) + NAVY_DARK[i] * t) for i in range(3)))
+    d.text((PAD, 55), "EduTecJob", font=font(52, True), fill=WHITE)
+    d.text((PAD, 117), "Learn  \u2022  Practice  \u2022  Get Placed", font=font(25), fill=SOFT)
+    tf = font(25, True)
     tw = d.textlength(tag, font=tf)
-    d.rounded_rectangle([W - pad - tw - 44, 72, W - pad, 124], radius=26, fill=ORANGE)
-    d.text((W - pad - tw - 22, 84), tag, font=tf, fill=WHITE)
+    d.rounded_rectangle([W - PAD - tw - 44, 66, W - PAD, 116], radius=25, fill=ORANGE)
+    d.text((W - PAD - tw - 22, 91), tag, font=tf, fill=WHITE, anchor="lm")
 
-    # category pill
-    y = 210
-    cf = font(28, True)
-    cat = q["category"].upper()
+    y = 185
+    cf = font(26, True)
+    cat = category.upper()
     cw = d.textlength(cat, font=cf)
-    d.rounded_rectangle([pad, y, pad + cw + 40, y + 50], radius=25, outline=ORANGE, width=3)
-    d.text((pad + 20, y + 10), cat, font=cf, fill=ORANGE)
-
-    # Space below the question is fixed; the question and option boxes
-    # shrink step by step until everything fits above the footer.
-    footer_top = H - 110
-    bottom_limit = footer_top - (125 if yesterday else 20)
-    y += 85
-    for size, box_h, gap in [(56, 104, 22), (50, 96, 18), (46, 88, 16), (42, 82, 14), (38, 76, 12), (34, 70, 10)]:
-        qf = font(size, True)
-        lines = wrap_to_width(d, q["question"], qf, W - 2 * pad)
-        needed = len(lines) * int(size * 1.25) + 30 + 4 * (box_h + gap) + 110
-        if y + needed <= bottom_limit:
+    d.rounded_rectangle([PAD, y, PAD + cw + 40, y + 46], radius=23, outline=ORANGE, width=3)
+    d.text((PAD + 20, y + 23), cat, font=cf, fill=ORANGE, anchor="lm")
+    y += 70
+    for size in (50, 46, 42, 38, 34):
+        tf = font(size, True)
+        lines = wrap(d, fix(title, tf), tf, W - 2 * PAD)
+        if len(lines) <= title_max_lines:
             break
     for line in lines:
-        d.text((pad, y), fix(line, qf), font=qf, fill=WHITE)
-        y += int(size * 1.25)
+        d.text((PAD, y), line, font=tf, fill=WHITE)
+        y += int(size * 1.22)
 
-    # options
-    y += 30
-    lf = font(36, True)
-    for letter in "ABCD":
-        d.rounded_rectangle([pad, y, W - pad, y + box_h], radius=22, fill=WHITE)
-        cx, cy = pad + 56, y + box_h // 2
-        d.ellipse([cx - 32, cy - 32, cx + 32, cy + 32], fill=NAVY)
-        d.text((cx, cy), letter, font=lf, fill=WHITE, anchor="mm")
-        s = 38
-        f = font(s, True)
-        opt = fix(q[letter.lower()], f)
-        while d.textlength(opt, font=f) > W - 2 * pad - 140 and s > 24:
-            s -= 2
-            f = font(s, True)
-        d.text((pad + 115, cy), opt, font=f, fill=INK, anchor="lm")
-        y += box_h + gap
-
-    # call to action
-    d.text((W // 2, y + 30), "Comment your answer: A, B, C or D", font=font(38, True), fill=ORANGE, anchor="mm")
-    d.text((W // 2, y + 76), "Answer revealed in tomorrow's post", font=font(28), fill=SOFT, anchor="mm")
-
-    # yesterday's answer
-    if yesterday:
-        yy = footer_top - 105
-        d.rounded_rectangle([pad, yy, W - pad, yy + 80], radius=18, fill=NAVY_DARK, outline=GREEN, width=3)
-        ff = font(30, True)
-        txt = fix("Yesterday's answer: (%s) %s" % (yesterday["letter"], yesterday["text"]), ff)
-        while d.textlength(txt, font=ff) > W - 2 * pad - 40:
-            txt = txt[:-4] + "..."
-        d.text((W // 2, yy + 40), txt, font=ff, fill=WHITE, anchor="mm")
-
-    # footer band
+    footer_top = H - 105
     d.rectangle([0, footer_top, W, H], fill=ORANGE)
-    ff = font(30, True)
-    d.text((W // 2, footer_top + 36), fix("Mock tests for 23 exams  •  From just ₹10 per test", ff),
+    ff = font(29, True)
+    d.text((W // 2, footer_top + 34), fix("Mock tests for 23 exams  \u2022  From just \u20b910 per test", ff),
            font=ff, fill=WHITE, anchor="mm")
-    d.text((W // 2, footer_top + 78), "www.edutecjob.com", font=font(32, True), fill=NAVY_DARK, anchor="mm")
+    d.text((W // 2, footer_top + 74), "www.edutecjob.com", font=font(31, True), fill=NAVY_DARK, anchor="mm")
+    return img, d, y + 10, footer_top
 
+
+def render_puzzle(p, day, path):
+    img, d, top, bottom = frame("DAY %d  \u2022  %s" % (day, p["name"].upper()), p["category"], p["title"])
+    if p["rules"]:
+        rf = font(27, False)
+        for line in wrap(d, p["rules"], rf, W - 2 * PAD)[:2]:
+            d.text((PAD, top), line, font=rf, fill=SOFT)
+            top += 36
+        top += 10
+    cta_h = 70
+    p["puzzle"](d, (PAD, top + 10, W - PAD, bottom - cta_h - 10))
+    d.text((W // 2, bottom - 40), "Comment your answer!  Solution tomorrow", font=font(34, True), fill=ORANGE,
+           anchor="mm")
     img.save(path, "PNG", optimize=True)
 
 
-def caption(q, day, yesterday):
-    cat = q["category"]
-    tags = HASHTAGS_BASE + HASHTAGS_BY_CATEGORY.get(cat, HASHTAGS_GK)
-    parts = [
-        "\U0001f9e0 Question of the Day #%d | %s" % (day, cat),
-        "",
-        q["question"],
-        "",
-        "A) %s\nB) %s\nC) %s\nD) %s" % (q["a"], q["b"], q["c"], q["d"]),
-        "",
-        "\U0001f447 Comment your answer (A/B/C/D). Answer in tomorrow's post!",
-    ]
-    if yesterday:
-        parts += ["", "\u2705 Yesterday's answer: (%s) %s" % (yesterday["letter"], yesterday["text"]),
-                  yesterday["explanation"]]
+def render_answer(p, day, path):
+    title = p["title"] if p["name"] == "Quiz" else "Solution: " + p["name"]
+    img, d, top, bottom = frame("ANSWER  \u2022  DAY %d" % day, p["category"], title)
+    p["answer"](d, (PAD, top + 10, W - PAD, bottom - 80))
+    d.text((W // 2, bottom - 42), "Did you get it right? Follow for today's puzzle!", font=font(31, True),
+           fill=ORANGE, anchor="mm")
+    img.save(path, "PNG", optimize=True)
+
+
+def caption(p, day, prev):
+    parts = ["\U0001f9e9 Puzzle of the Day #%d | %s" % (day, p["name"] if p["name"] != "Quiz" else p["category"]),
+             "", p["title"]]
+    if p.get("options"):
+        parts += ["", p["options"]]
+    if p["rules"]:
+        parts += ["", p["rules"]]
+    parts += ["", "\U0001f447 Comment your answer! Solution in tomorrow's post."]
+    if prev:
+        parts += ["", "\u2705 Yesterday's answer (swipe \u27a1\ufe0f): " + prev["answer_text"]]
     parts += [
         "",
         "\U0001f3af Practise real exam patterns: SSC, Banking, Railways, UPSC, NDA, Police & more",
         "\U0001f4b0 Mock tests from just \u20b910 | Free skill certifications",
         "\U0001f517 edutecjob.com (link in bio)",
         "",
-        "Follow @edutecjob for a new question every day!",
+        "Follow @edutecjob for a new puzzle every day!",
         "",
-        " ".join(tags),
+        " ".join(HASHTAGS_BASE + p["hashtags"]),
     ]
     return "\n".join(parts)
 
 
-def build(questions, count, last, out_path):
-    q = questions[count % len(questions)]
-    day = count + 1
-    render(q, day, last, out_path)
-    letter, text = answer_text(q)
-    return q, day, caption(q, day, last), {
-        "letter": letter, "text": text, "explanation": q["explanation"]}
+def build(day, questions, out_dir):
+    """Makes the images for one day. Returns (list of image file names, caption)."""
+    p = puzzle_for_day(day, questions)
+    names = ["day-%03d-1.png" % day]
+    render_puzzle(p, day, os.path.join(out_dir, names[0]))
+    prev = None
+    if day > 1:
+        prev = puzzle_for_day(day - 1, questions)
+        names.append("day-%03d-2.png" % day)
+        render_answer(prev, day - 1, os.path.join(out_dir, names[1]))
+    return names, caption(p, day, prev)
+
+
+def load_state():
+    if os.path.exists(STATE):
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
+    return {"posted_count": 0}
 
 
 def main():
@@ -242,31 +279,26 @@ def main():
     if args.preview:
         prev_dir = os.path.join(HERE, "previews")
         os.makedirs(prev_dir, exist_ok=True)
-        last = None
-        for i in range(args.preview):
-            p = os.path.join(prev_dir, "day-%03d.png" % (i + 1))
-            _, _, cap, last = build(questions, i, last, p)
-            with open(p.replace(".png", ".txt"), "w", encoding="utf-8") as f:
+        for day in range(1, args.preview + 1):
+            names, cap = build(day, questions, prev_dir)
+            with open(os.path.join(prev_dir, "day-%03d.txt" % day), "w", encoding="utf-8") as f:
                 f.write(cap)
-            print("Preview:", p)
+            print("Preview day %d: %s" % (day, ", ".join(names)))
         return
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    count = state["posted_count"]
-    image_name = "day-%03d.png" % (count + 1)
-    path = os.path.join(OUT_DIR, image_name)
-    q, day, cap, this_answer = build(questions, count, state.get("last"), path)
-
+    day = state["posted_count"] + 1
     if args.mark_posted:
-        state["posted_count"] = count + 1
-        state["last"] = this_answer
-        save_state(state)
+        state["posted_count"] = day
+        with open(STATE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
         print("Marked day %d as posted." % day)
         return
 
+    os.makedirs(OUT_DIR, exist_ok=True)
+    names, cap = build(day, questions, OUT_DIR)
     with open(os.path.join(HERE, "caption.txt"), "w", encoding="utf-8") as f:
         f.write(cap)
-    print(json.dumps({"day": day, "image": "published/" + image_name}))
+    print(json.dumps({"day": day, "images": ["published/" + n for n in names]}))
 
 
 if __name__ == "__main__":
