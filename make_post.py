@@ -146,6 +146,7 @@ def gen_quiz(q):
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "(%s) %s. %s" % (letter, q[letter.lower()], q["explanation"]),
         "options": "A) %s\nB) %s\nC) %s\nD) %s" % (q["a"], q["b"], q["c"], q["d"]),
+        "data": {"options": ["%s) %s" % (L, q[L.lower()]) for L in "ABCD"], "correct": "ABCD".index(letter)},
         "hashtags": QUIZ_TAGS.get(q["category"], ["#gk", "#generalknowledge", "#gkquiz"]),
     }
 
@@ -157,8 +158,11 @@ def puzzle_for_day(day, questions):
     if kind == "quiz":
         per_cycle = ROTATION.count("quiz")
         idx = ((day - 1) // len(ROTATION)) * per_cycle + ROTATION[:pos].count("quiz")
-        return gen_quiz(questions[idx % len(questions)])
-    return puzzles.GENERATORS[kind](random.Random(day * 7919 + 17))
+        p = gen_quiz(questions[idx % len(questions)])
+    else:
+        p = puzzles.GENERATORS[kind](random.Random(day * 7919 + 17))
+    p["kind"] = kind
+    return p
 
 
 # ---------------------------------------------------------------- page layout
@@ -210,7 +214,7 @@ def render_puzzle(p, day, path):
         top += 10
     cta_h = 70
     p["puzzle"](d, (PAD, top + 10, W - PAD, bottom - cta_h - 10))
-    d.text((W // 2, bottom - 40), "Comment your answer!  Solution tomorrow", font=font(34, True), fill=ORANGE,
+    d.text((W // 2, bottom - 40), "Play online: link in bio  \u2022  Answer tomorrow", font=font(32, True), fill=ORANGE,
            anchor="mm")
     img.save(path, "PNG", optimize=True)
 
@@ -231,7 +235,8 @@ def caption(p, day, prev):
         parts += ["", p["options"]]
     if p["rules"]:
         parts += ["", p["rules"]]
-    parts += ["", "\U0001f447 Comment your answer! Solution in tomorrow's post."]
+    parts += ["", "\u25b6\ufe0f PLAY IT ONLINE: link in bio!",
+              "\U0001f447 Or comment your answer. Solution in tomorrow's post."]
     if prev:
         parts += ["", "\u2705 Yesterday's answer (swipe \u27a1\ufe0f): " + prev["answer_text"]]
     parts += [
@@ -247,11 +252,32 @@ def caption(p, day, prev):
     return "\n".join(parts)
 
 
-def build(day, questions, out_dir):
+def write_play(p, day, play_dir, image_name):
+    """Saves the data the playable web page (index.html) needs for this day."""
+    os.makedirs(play_dir, exist_ok=True)
+    info = {"day": day, "kind": p["kind"], "name": p["name"], "category": p["category"],
+            "title": p["title"], "rules": p["rules"], "data": p["data"],
+            "answer_text": p["answer_text"], "image": "published/" + image_name}
+    if p["kind"] == "spot":
+        base, changed = p["scenes"]
+        for suffix, params in (("a", base), ("b", changed)):
+            img = Image.new("RGB", (900, 405), WHITE)
+            puzzles._scene(ImageDraw.Draw(img), 0, 0, 900, 405, params)
+            img.save(os.path.join(play_dir, "day-%03d-%s.png" % (day, suffix)), "PNG", optimize=True)
+        info["scenes"] = ["play/day-%03d-a.png" % day, "play/day-%03d-b.png" % day]
+    with open(os.path.join(play_dir, "day-%03d.json" % day), "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
+    with open(os.path.join(play_dir, "today.json"), "w", encoding="utf-8") as f:
+        json.dump({"day": day}, f)
+
+
+def build(day, questions, out_dir, play_dir=None):
     """Makes the images for one day. Returns (list of image file names, caption)."""
     p = puzzle_for_day(day, questions)
     names = ["day-%03d-1.png" % day]
     render_puzzle(p, day, os.path.join(out_dir, names[0]))
+    if play_dir:
+        write_play(p, day, play_dir, names[0])
     prev = None
     if day > 1:
         prev = puzzle_for_day(day - 1, questions)
@@ -295,7 +321,7 @@ def main():
         return
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    names, cap = build(day, questions, OUT_DIR)
+    names, cap = build(day, questions, OUT_DIR, os.path.join(HERE, "play"))
     with open(os.path.join(HERE, "caption.txt"), "w", encoding="utf-8") as f:
         f.write(cap)
     print(json.dumps({"day": day, "images": ["published/" + n for n in names]}))

@@ -132,6 +132,7 @@ def gen_sudoku(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "Top row: " + " ".join(str(v) for v in sol[:6]),
+        "data": {"puzzle": puzzle, "solution": sol},
         "hashtags": ["#sudoku", "#minisudoku", "#logicpuzzle", "#brainteaser"],
     }
 
@@ -290,6 +291,7 @@ def gen_path(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "See the full path in the image",
+        "data": {"n": n, "clues": {str(c): k for c, k in clues.items()}, "solution": path},
         "hashtags": ["#numberpuzzle", "#logicpuzzle", "#brainteaser", "#puzzlegame"],
     }
 
@@ -366,6 +368,7 @@ def gen_maze(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "See the route in the image",
+        "data": {"n": n, "open": sorted([a, b] for a, b in opened), "solution": sol},
         "hashtags": ["#maze", "#mazepuzzle", "#brainteaser", "#careergoals"],
     }
 
@@ -500,6 +503,8 @@ def gen_spot(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "All 5 differences are circled in red",
+        "data": {"boxes": [list(b) for b in boxes]},
+        "scenes": (base, changed),
         "hashtags": ["#spotthedifference", "#findthedifference", "#observation", "#brainteaser"],
     }
 
@@ -581,6 +586,7 @@ def gen_race(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "Car %s wins! " % win[0] + " | ".join(lines),
+        "data": {"options": ["Car %s" % c[0] for c in cars], "correct": cars.index(win)},
         "hashtags": ["#timespeeddistance", "#quantitativeaptitude", "#mathstricks", "#aptitude"],
     }
 
@@ -642,6 +648,7 @@ def gen_team(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "Team %s wins! " % win[0] + " | ".join(lines),
+        "data": {"options": ["Team %s" % t[0] for t in teams], "correct": teams.index(win)},
         "hashtags": ["#timeandwork", "#quantitativeaptitude", "#aptitude", "#mathstricks"],
     }
 
@@ -755,6 +762,7 @@ def gen_gears(rng):
         "puzzle": lambda d, b: draw(d, b, False),
         "answer": lambda d, b: draw(d, b, True),
         "answer_text": "The last gear turns %s" % ("CLOCKWISE" if last_cw else "ANTICLOCKWISE"),
+        "data": {"options": ["Clockwise", "Anticlockwise"], "correct": 0 if last_cw else 1},
         "hashtags": ["#reasoning", "#mechanicalreasoning", "#logicalreasoning", "#brainteaser"],
     }
 
