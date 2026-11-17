@@ -36,14 +36,15 @@ jobs:
         run: |
           OUT=$(python make_post.py)
           echo "$OUT"
-          echo "image=$(echo "$OUT" | python -c 'import json,sys; print(json.load(sys.stdin)["image"])')" >> "$GITHUB_OUTPUT"
+          echo "images=$(echo "$OUT" | python -c 'import json,sys; print(" ".join(json.load(sys.stdin)["images"]))')" >> "$GITHUB_OUTPUT"
+          echo "day=$(echo "$OUT" | python -c 'import json,sys; print(json.load(sys.stdin)["day"])')" >> "$GITHUB_OUTPUT"
 
       - name: Upload the image so Instagram can fetch it
         run: |
           git config user.name "edutecjob-bot"
           git config user.email "actions@users.noreply.github.com"
           git add published
-          git commit -m "Add ${{ steps.make.outputs.image }}" || echo "nothing new"
+          git commit -m "Add day ${{ steps.make.outputs.day }} images" || echo "nothing new"
           git push
 
       - name: Post to Instagram
@@ -53,14 +54,16 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           GRAPH_HOST: ${{ vars.GRAPH_HOST }}
         run: |
-          URL="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/${{ steps.make.outputs.image }}"
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}"
+          ARGS=""
+          for IMG in ${{ steps.make.outputs.images }}; do ARGS="$ARGS --image-url $BASE/$IMG"; done
           sleep 20
-          python post_to_instagram.py --image-url "$URL" --caption-file caption.txt
+          python post_to_instagram.py --caption-file caption.txt $ARGS
 
       - name: Move on to the next question
         if: ${{ !inputs.dry_run }}
         run: |
           python make_post.py --mark-posted
           git add state.json
-          git commit -m "Posted ${{ steps.make.outputs.image }}"
+          git commit -m "Posted day ${{ steps.make.outputs.day }}"
           git push
